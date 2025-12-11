@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 import Carbon
-import Combine // Required for ObservableObject and @Published
+import Combine
 
 // MARK: - Main Entry Point
 @main
@@ -9,7 +9,6 @@ struct ScreenAnnotatorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // Standard macOS Settings Window
         Settings {
             SettingsView()
                 .environmentObject(appDelegate)
@@ -27,25 +26,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var overlayWindow: OverlayWindow?
     var toolbarWindow: ToolbarWindow?
     
-    // User Preferences (Persisted)
+    // Preferences
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
     @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
     
-    // Internal Timer logic
     private var hideTimer: Timer?
     
-    // Global App State
+    // State
     @Published var isDrawingMode = false {
         didSet { toggleDrawingMode(isDrawingMode) }
     }
     
-    // Annotation Data
     @Published var annotations: [Annotation] = []
     
     // Tools
     @Published var currentTool: ToolType = .pen
     @Published var selectedColor: Color = .red
     @Published var lineWidth: CGFloat = 5.0
+    
+    // Highlighter mode adds transparency to the selected color
+    var effectiveColor: Color {
+        return currentTool == .highlighter ? selectedColor.opacity(0.4) : selectedColor
+    }
+    
+    var effectiveWidth: CGFloat {
+        return currentTool == .highlighter ? 25.0 : lineWidth
+    }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
@@ -54,7 +60,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupGlobalHotKey()
     }
     
-    // 1. Menu Bar
     func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem?.button {
@@ -63,7 +68,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     
-    // 2. Global Hotkey
     func setupGlobalHotKey() {
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return }
@@ -71,17 +75,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 DispatchQueue.main.async { self.isDrawingMode.toggle() }
             }
         }
+        
+        // Also monitor local Escape key to exit
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
+            
+            // Toggle Shortcut
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
                 self.isDrawingMode.toggle()
                 return nil
             }
+            
+            // Escape Key to Exit
+            if event.keyCode == kVK_Escape && self.isDrawingMode {
+                self.isDrawingMode = false
+                return nil
+            }
+            
             return event
         }
     }
     
-    // 3. Overlay Window (Canvas)
     func setupOverlayWindow() {
         let screenRect = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
         overlayWindow = OverlayWindow(
@@ -94,14 +108,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         overlayWindow?.backgroundColor = .clear
         overlayWindow?.isOpaque = false
         overlayWindow?.ignoresMouseEvents = true
-        // The canvas should be visible in recordings (default sharingType)
+        overlayWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        
+        // CRITICAL: Level must be high enough to draw over apps, but LOWER than the toolbar
+        // .screenSaver is usually ~1000.
+        overlayWindow?.level = .screenSaver
         overlayWindow?.orderOut(nil)
     }
     
-    // 4. Floating Toolbar
     func setupToolbarWindow() {
         toolbarWindow = ToolbarWindow(
-            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 380, height: 80),
+            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 440, height: 80),
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -112,12 +129,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         toolbarWindow?.backgroundColor = .clear
         toolbarWindow?.isOpaque = false
         toolbarWindow?.hasShadow = true
-        toolbarWindow?.level = .popUpMenu
         
-        // --- STEALTH MODE ---
-        // .none means: Visible to user, Invisible to Screenshots/Screen Share/OBS
+        // CRITICAL: Toolbar must be strictly HIGHER than overlay to receive clicks
+        toolbarWindow?.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 1)
+        
         toolbarWindow?.sharingType = .none
-        
         toolbarWindow?.orderOut(nil)
     }
     
@@ -127,12 +143,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func toggleDrawingMode(_ active: Bool) {
         if active {
-            overlayWindow?.level = .screenSaver
             overlayWindow?.makeKeyAndOrderFront(nil)
             overlayWindow?.ignoresMouseEvents = false
             
             toolbarWindow?.makeKeyAndOrderFront(nil)
-            resetAutoHideTimer() // Start tracking inactivity
+            resetAutoHideTimer()
             
             NSCursor.crosshair.push()
         } else {
@@ -146,31 +161,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     
-    // MARK: - Auto Hide Logic
     func resetAutoHideTimer() {
-        // Cancel existing timer
         hideTimer?.invalidate()
-        
-        // Ensure visible
         toolbarWindow?.animator().alphaValue = 1.0
         
         guard autoHideEnabled else { return }
         
-        // Schedule new fade out
         hideTimer = Timer.scheduledTimer(withTimeInterval: autoHideDelay, repeats: false) { [weak self] _ in
             guard let self = self else { return }
-            // Fade to 0.1 (faintly visible to find it) or 0.0 (invisible)
-            // Using 0.0 requires user to remember where it was, but looks cleaner.
             self.toolbarWindow?.animator().alphaValue = 0.0
         }
     }
     
     func userInteractedWithToolbar() {
-        // Called when hovering or clicking the toolbar
         resetAutoHideTimer()
     }
     
-    // MARK: - Data Management
     func clearAll() { annotations.removeAll() }
     
     func clearArea(in rect: CGRect) {
@@ -186,7 +192,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
 // MARK: - Models
 enum ToolType: String, CaseIterable {
-    case pen, rectangle, circle, text, eraser
+    case pen, highlighter, rectangle, circle, text, eraser
 }
 
 struct Annotation: Identifiable {
@@ -203,119 +209,6 @@ enum AnnotationType {
     case circle(CGRect)
 }
 
-// MARK: - UI: Settings View
-struct SettingsView: View {
-    @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
-    @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
-    
-    var body: some View {
-        Form {
-            Section(header: Text("Toolbar Appearance")) {
-                Toggle("Auto-hide Toolbar", isOn: $autoHideEnabled)
-                    .toggleStyle(.switch)
-                
-                if autoHideEnabled {
-                    VStack(alignment: .leading) {
-                        Text("Hide after \(String(format: "%.1f", autoHideDelay)) seconds")
-                        Slider(value: $autoHideDelay, in: 1.0...10.0, step: 0.5)
-                    }
-                }
-                
-                Text("Note: The toolbar is invisible to screen recordings.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Section(header: Text("Shortcuts")) {
-                HStack {
-                    Text("Toggle Overlay")
-                    Spacer()
-                    Text("⌘ + ⌥ + A")
-                        .padding(4)
-                        .background(Color.gray.opacity(0.2))
-                        .cornerRadius(4)
-                }
-            }
-        }
-        .padding()
-        .frame(width: 350, height: 200)
-    }
-}
-
-// MARK: - UI: Floating Toolbar
-struct ControlPanel: View {
-    @EnvironmentObject var appDelegate: AppDelegate
-    
-    var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "line.3.horizontal")
-                .foregroundColor(.secondary)
-            
-            HStack(spacing: 8) {
-                ToolButton(icon: "pencil", tool: .pen)
-                ToolButton(icon: "square", tool: .rectangle)
-                ToolButton(icon: "circle", tool: .circle)
-                ToolButton(icon: "textformat", tool: .text)
-                ToolButton(icon: "eraser", tool: .eraser)
-            }
-            .padding(6)
-            .background(Color.black.opacity(0.1))
-            .cornerRadius(8)
-            
-            Divider().frame(height: 30)
-            
-            ColorPicker("", selection: $appDelegate.selectedColor).labelsHidden()
-            
-            if [.pen, .rectangle, .circle].contains(appDelegate.currentTool) {
-                Slider(value: $appDelegate.lineWidth, in: 2...20)
-                    .frame(width: 50)
-                    .accentColor(appDelegate.selectedColor)
-            }
-            
-            Spacer()
-            
-            Button(action: { appDelegate.clearAll() }) {
-                Image(systemName: "trash").font(.system(size: 14)).foregroundColor(.red)
-            }
-            .buttonStyle(.plain)
-            
-            Button(action: { appDelegate.isDrawingMode = false }) {
-                Image(systemName: "xmark").font(.system(size: 14, weight: .bold))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
-        .cornerRadius(16)
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.white.opacity(0.2), lineWidth: 1))
-        // INTERACTION TRACKING
-        .onHover { hovering in
-            if hovering {
-                appDelegate.userInteractedWithToolbar()
-            }
-        }
-        .onTapGesture {
-            appDelegate.userInteractedWithToolbar()
-        }
-    }
-    
-    func ToolButton(icon: String, tool: ToolType) -> some View {
-        Button(action: {
-            appDelegate.currentTool = tool
-            appDelegate.userInteractedWithToolbar()
-        }) {
-            Image(systemName: icon)
-                .font(.system(size: 16))
-                .foregroundColor(appDelegate.currentTool == tool ? .white : .secondary)
-                .frame(width: 28, height: 28)
-                .background(appDelegate.currentTool == tool ? Color.blue : Color.clear)
-                .cornerRadius(6)
-        }
-        .buttonStyle(.plain)
-    }
-}
-
 // MARK: - UI: Canvas View
 struct CanvasView: View {
     @EnvironmentObject var appDelegate: AppDelegate
@@ -325,27 +218,31 @@ struct CanvasView: View {
     
     var body: some View {
         ZStack {
+            // Invisible background to catch clicks
             Color.white.opacity(0.0001)
             
+            // 1. Saved Annotations
             ForEach(appDelegate.annotations) { annotation in
                 renderAnnotation(annotation)
             }
             
+            // 2. Active Drawing (Live Feedback)
             if let start = dragStart, let current = dragCurrent {
                 renderActiveDrag(start: start, current: current)
             } else if !currentPath.isEmpty {
                  Path { p in
-                    p.move(to: currentPath.first!)
+                    guard let first = currentPath.first else { return }
+                    p.move(to: first)
                     for point in currentPath.dropFirst() { p.addLine(to: point) }
                 }
-                .stroke(appDelegate.selectedColor, style: StrokeStyle(lineWidth: appDelegate.lineWidth, lineCap: .round, lineJoin: .round))
+                .stroke(appDelegate.effectiveColor, style: StrokeStyle(lineWidth: appDelegate.effectiveWidth, lineCap: .round, lineJoin: .round))
             }
         }
         .gesture(
-            DragGesture(minimumDistance: 0)
+            DragGesture(minimumDistance: 0) // 0 distance ensures immediate start
                 .onChanged { value in
                     handleDragChange(value)
-                    appDelegate.resetAutoHideTimer() // Touching canvas keeps toolbar alive? Option: Remove this line if you want toolbar to hide while drawing
+                    appDelegate.resetAutoHideTimer()
                 }
                 .onEnded { value in
                     handleDragEnd(value)
@@ -397,7 +294,11 @@ struct CanvasView: View {
     private func handleDragChange(_ value: DragGesture.Value) {
         if dragStart == nil { dragStart = value.startLocation }
         dragCurrent = value.location
-        if appDelegate.currentTool == .pen { currentPath.append(value.location) }
+        
+        // Immediate feedback for drawing tools
+        if appDelegate.currentTool == .pen || appDelegate.currentTool == .highlighter {
+            currentPath.append(value.location)
+        }
     }
     
     private func handleDragEnd(_ value: DragGesture.Value) {
@@ -406,9 +307,15 @@ struct CanvasView: View {
         let rect = CGRect(from: start, to: end)
         
         switch appDelegate.currentTool {
-        case .pen:
-            appDelegate.annotations.append(Annotation(type: .path(currentPath), color: appDelegate.selectedColor, width: appDelegate.lineWidth))
+        case .pen, .highlighter:
+            // Commit path
+            appDelegate.annotations.append(Annotation(
+                type: .path(currentPath),
+                color: appDelegate.effectiveColor,
+                width: appDelegate.effectiveWidth
+            ))
             currentPath = []
+            
         case .rectangle:
             appDelegate.annotations.append(Annotation(type: .rectangle(rect), color: appDelegate.selectedColor, width: appDelegate.lineWidth))
         case .circle:
@@ -423,6 +330,92 @@ struct CanvasView: View {
     }
 }
 
+// MARK: - UI: Toolbar (Control Panel)
+struct ControlPanel: View {
+    @EnvironmentObject var appDelegate: AppDelegate
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundColor(.secondary)
+            
+            // Tool Group
+            HStack(spacing: 4) {
+                ToolButton(icon: "pencil", tool: .pen)
+                ToolButton(icon: "highlighter", tool: .highlighter)
+                ToolButton(icon: "square", tool: .rectangle)
+                ToolButton(icon: "circle", tool: .circle)
+                ToolButton(icon: "textformat", tool: .text)
+                ToolButton(icon: "eraser", tool: .eraser)
+            }
+            .padding(4)
+            .background(Color.black.opacity(0.1))
+            .cornerRadius(8)
+            
+            Divider().frame(height: 24)
+            
+            ColorPicker("", selection: $appDelegate.selectedColor)
+                .labelsHidden()
+                .frame(width: 30)
+            
+            if [.pen, .rectangle, .circle].contains(appDelegate.currentTool) {
+                Slider(value: $appDelegate.lineWidth, in: 2...20)
+                    .frame(width: 40)
+                    .accentColor(appDelegate.selectedColor)
+            }
+            
+            Spacer()
+            
+            // Actions
+            Button(action: { appDelegate.clearAll() }) {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Clear All")
+            
+            Button(action: { appDelegate.isDrawingMode = false }) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(.gray)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .help("Exit (Esc)")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.2), lineWidth: 1))
+        .shadow(radius: 5)
+        // Ensure clicks register
+        .onHover { hovering in
+            if hovering { appDelegate.userInteractedWithToolbar() }
+        }
+        .onTapGesture {
+            appDelegate.userInteractedWithToolbar()
+        }
+    }
+    
+    func ToolButton(icon: String, tool: ToolType) -> some View {
+        Button(action: {
+            appDelegate.currentTool = tool
+            appDelegate.userInteractedWithToolbar()
+        }) {
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(appDelegate.currentTool == tool ? .white : .secondary)
+                .frame(width: 26, height: 26)
+                .background(appDelegate.currentTool == tool ? Color.blue : Color.clear)
+                .cornerRadius(6)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - UI: Text Node
 struct TextNodeView: View {
     @State var text: String
     var color: Color
@@ -434,6 +427,32 @@ struct TextNodeView: View {
             .foregroundColor(color)
             .frame(width: 300)
             .position(location)
+            .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
+    }
+}
+
+// MARK: - UI: Settings
+struct SettingsView: View {
+    @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
+    @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
+    
+    var body: some View {
+        Form {
+            Section(header: Text("Toolbar")) {
+                Toggle("Auto-hide Toolbar", isOn: $autoHideEnabled)
+                if autoHideEnabled {
+                    Slider(value: $autoHideDelay, in: 1.0...10.0, step: 0.5) {
+                        Text("Delay: \(String(format: "%.1f", autoHideDelay))s")
+                    }
+                }
+            }
+            Section(header: Text("Shortcuts")) {
+                HStack { Text("Toggle Overlay"); Spacer(); Text("⌘⌥A").foregroundColor(.secondary) }
+                HStack { Text("Exit Overlay"); Spacer(); Text("Esc").foregroundColor(.secondary) }
+            }
+        }
+        .padding()
+        .frame(width: 300)
     }
 }
 
@@ -444,7 +463,10 @@ class OverlayWindow: NSWindow {
 
 class ToolbarWindow: NSWindow {
     override var canBecomeKey: Bool { true }
-    override func mouseDown(with event: NSEvent) { self.performDrag(with: event) }
+    // Enable dragging
+    override func mouseDown(with event: NSEvent) {
+        self.performDrag(with: event)
+    }
 }
 
 struct VisualEffectView: NSViewRepresentable {
