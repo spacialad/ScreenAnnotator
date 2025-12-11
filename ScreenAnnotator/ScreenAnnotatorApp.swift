@@ -382,6 +382,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
 
         if active {
+            // CRITICAL FIX: Activate the app to steal focus from background apps
+            NSApp.activate(ignoringOtherApps: true)
+            
             // 1. Show Toolbar (Show only, don't focus yet)
             toolbarWindow?.orderFront(nil)
             
