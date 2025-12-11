@@ -62,7 +62,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupMenuBar()
         setupOverlayWindow()
         setupToolbarWindow()
+        setupColorPanel() // <--- Fix for Color Picker Z-Order
         setupGlobalHotKey()
+    }
+    
+    // Fix: Force System Color Panel to be above the Overlay
+    func setupColorPanel() {
+        // The overlay is at .screenSaver level.
+        // The toolbar is at .screenSaver + 1.
+        // We set the color panel to .screenSaver + 2 to ensure it floats on top of everything.
+        NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 2)
+        NSColorPanel.shared.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     }
     
     func setupMenuBar() {
@@ -211,6 +221,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             overlayWindow?.ignoresMouseEvents = false
             toolbarWindow?.makeKeyAndOrderFront(nil)
             resetAutoHideTimer()
+            // Re-apply Z-Order fix every time we activate to be safe
+            NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 2)
             NSCursor.crosshair.push()
         } else {
             cleanupEmptyTextNodes() // Clean up before hiding
