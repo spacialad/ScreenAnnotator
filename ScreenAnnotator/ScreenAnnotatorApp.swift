@@ -11,21 +11,12 @@ import Combine
  2. Go to the 'Info' tab.
  3. Add a new key: "Application is agent (UIElement)" (Raw key: LSUIElement).
  4. Set the value to "YES".
- 
- This code below attempts to hide it programmatically as early as possible,
- but the Info.plist method is the only way to be 100% invisible to the Dock.
 */
 
 // MARK: - Main Entry Point
 @main
 struct ScreenAnnotatorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-    init() {
-        // Attempt to hide from Dock immediately on startup.
-        // Note: Info.plist 'LSUIElement' is required for this to be 100% seamless.
-        NSApp.setActivationPolicy(.accessory)
-    }
 
     var body: some Scene {
         // Note: In .accessory mode, this Settings scene is not accessible via standard menus.
