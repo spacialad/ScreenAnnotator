@@ -42,7 +42,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var idToFocus: UUID? = nil
     
     @Published var currentTool: ToolType = .pen {
-        didSet { selectedAnnotationID = nil }
+        didSet {
+            cleanupEmptyTextNodes()
+            selectedAnnotationID = nil
+        }
     }
     @Published var selectedColor: Color = .red
     @Published var lineWidth: CGFloat = 5.0
@@ -87,16 +90,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 return nil
             }
             
-            // 2. Escape Key -> Exit
+            // 2. Escape Key Handling
             if event.keyCode == kVK_Escape {
-                if self.selectedAnnotationID != nil {
-                    // If something is selected, deselect it first
-                    self.selectedAnnotationID = nil
-                    self.idToFocus = nil // Drop focus
-                    // Resign focus from window level to ensure green border goes away
+                // Check if a Text Field is currently the responder (Edit Mode / Green)
+                let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
+                
+                if isEditing {
+                    // State: Editing (Green) -> Escape -> Selected (Blue)
+                    // We resign focus, but keep selectedAnnotationID set.
                     self.overlayWindow?.makeFirstResponder(nil)
+                    self.idToFocus = nil
+                    // IMPORTANT: We do NOT clear selectedAnnotationID here.
+                    return nil
+                } else if self.selectedAnnotationID != nil {
+                    // State: Selected (Blue) -> Escape -> Deselected
+                    self.cleanupEmptyTextNodes()
+                    self.selectedAnnotationID = nil
+                    self.idToFocus = nil
                     return nil
                 } else if self.isDrawingMode {
+                    // State: Idle -> Escape -> Exit App
                     self.isDrawingMode = false
                     return nil
                 }
@@ -104,18 +117,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             // 3. Handle Text Box Logic (Delete vs Type)
             if self.selectedAnnotationID != nil {
-                // Check if we are currently editing (Green Mode)
-                // We check if the Field Editor (NSTextView) is the first responder
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 // DELETE Key
                 if event.keyCode == kVK_Delete || event.keyCode == kVK_ForwardDelete {
                     if isEditing {
-                        // Let the TextField handle text deletion
-                        return event
+                        return event // Let TextField handle text deletion
                     } else {
-                        // Selection Mode (Blue): Delete the annotation
-                        self.deleteSelectedAnnotation()
+                        self.deleteSelectedAnnotation() // Delete the whole box
                         return nil
                     }
                 }
@@ -126,20 +135,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                    !chars.isEmpty,
                    event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
                     
-                    // We are in Blue Mode, user typed a letter.
-                    // 1. Enter Edit Mode
-                    self.idToFocus = self.selectedAnnotationID
+                    self.idToFocus = self.selectedAnnotationID // Enter Edit Mode
                     
-                    // 2. Append character to text (Manual logic since TextField isn't focused yet)
-                    // We find the index and append.
+                    // Append character manually since focus wasn't there yet
                     if let index = self.annotations.firstIndex(where: { $0.id == self.selectedAnnotationID }) {
                         if case .text(let existingText, let loc) = self.annotations[index].type {
-                            // Append the typed character
                             self.annotations[index].type = .text(existingText + chars, loc)
                         }
                     }
-                    
-                    // Swallow event so it doesn't double-type once focus lands
                     return nil
                 }
             }
@@ -153,6 +156,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         annotations.removeAll { $0.id == id }
         selectedAnnotationID = nil
         idToFocus = nil
+    }
+    
+    func cleanupEmptyTextNodes() {
+        annotations.removeAll { annotation in
+            if case .text(let text, _) = annotation.type {
+                return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return false
+        }
     }
     
     func setupOverlayWindow() {
@@ -201,6 +213,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             resetAutoHideTimer()
             NSCursor.crosshair.push()
         } else {
+            cleanupEmptyTextNodes() // Clean up before hiding
             overlayWindow?.ignoresMouseEvents = true
             overlayWindow?.orderOut(nil)
             toolbarWindow?.orderOut(nil)
@@ -267,9 +280,13 @@ struct CanvasView: View {
             Color.white.opacity(0.0001)
                 .contentShape(Rectangle())
                 .onTapGesture {
+                    // CLEANUP on Blur
+                    appDelegate.cleanupEmptyTextNodes()
+                    
                     // Click outside -> Deselect everything
                     appDelegate.selectedAnnotationID = nil
                     appDelegate.idToFocus = nil
+                    
                     // Force unfocus
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
@@ -376,10 +393,11 @@ struct CanvasView: View {
         case .circle:
             appDelegate.annotations.append(Annotation(type: .circle(rect), color: appDelegate.selectedColor, width: appDelegate.lineWidth))
         case .text:
-            let newText = Annotation(type: .text("Double Click", end), color: appDelegate.selectedColor, width: 0)
+            // Start Empty
+            let newText = Annotation(type: .text("", end), color: appDelegate.selectedColor, width: 0)
             appDelegate.annotations.append(newText)
             appDelegate.selectedAnnotationID = newText.id
-            appDelegate.idToFocus = nil // Start in Selection mode (Blue)
+            appDelegate.idToFocus = newText.id // Auto-Enter Edit Mode
         case .eraser:
             appDelegate.clearArea(in: rect)
         }
@@ -388,7 +406,7 @@ struct CanvasView: View {
     }
 }
 
-// MARK: - UI: Text Node with Advanced Selection Logic
+// MARK: - UI: Text Node with Auto-Resize
 struct TextNodeView: View {
     @Binding var text: String
     var color: Color
@@ -401,45 +419,57 @@ struct TextNodeView: View {
     var isSelected: Bool { appDelegate.selectedAnnotationID == id }
     
     var body: some View {
-        TextField("", text: $text)
-            .textFieldStyle(.plain)
-            .font(.system(size: 24, weight: .bold))
-            .foregroundColor(color)
-            .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(borderColor, lineWidth: 2)
-                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
-            )
-            .frame(width: 300)
-            .position(location)
-            .focused($isFocused)
-            .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
-            // Handle Selection Logic
-            .onTapGesture {
+        // ZStack technique for Auto-Width TextField
+        ZStack {
+            // 1. Invisible Text used for sizing
+            // We verify text is not empty for size calc, else use placeholder size
+            Text(text.isEmpty ? "Type here" : text)
+                .font(.system(size: 24, weight: .bold))
+                .opacity(0)
+                .padding(8)
+            
+            // 2. The Actual Input Field
+            TextField("Type here", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 24, weight: .bold))
+                .foregroundColor(color)
+                .padding(8)
+                // Ensure it has at least some width to be clickable if empty
+                .frame(minWidth: 50)
+                .focused($isFocused)
+        }
+        // This fixedSize tells the parent to respect the ideal size (determined by the hidden Text)
+        .fixedSize()
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(borderColor, lineWidth: 2)
+                .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
+        )
+        // Position centers the view at the coordinates
+        .position(location)
+        .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
+        // Handle Interactions
+        .onTapGesture {
+            appDelegate.selectedAnnotationID = id
+            // Single tap on Blue = Blue. Single tap on unselected = Blue.
+        }
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                // Double click -> Edit Mode
                 appDelegate.selectedAnnotationID = id
-                // If already selected, tap enters edit mode (Green)
-                // If not selected, tap enters selection mode (Blue) -> handled by default state
+                appDelegate.idToFocus = id
             }
-            .simultaneousGesture(
-                TapGesture(count: 2).onEnded {
-                    // Double click forces Edit mode
-                    appDelegate.selectedAnnotationID = id
-                    appDelegate.idToFocus = id
-                }
-            )
-            // Sync programmatic focus
-            .onChange(of: appDelegate.idToFocus) { newId in
-                if newId == id {
-                    isFocused = true
-                }
+        )
+        .onChange(of: appDelegate.idToFocus) { newId in
+            if newId == id { isFocused = true }
+        }
+        .onChange(of: isFocused) { focused in
+            if focused {
+                // If focus gained, ensure we track selection
+                appDelegate.selectedAnnotationID = id
             }
-            // Auto-select when focused manually (e.g. via tab)
-            .onChange(of: isFocused) { focused in
-                if focused {
-                    appDelegate.selectedAnnotationID = id
-                }
-            }
+            // If focus lost, we don't clear selectedAnnotationID here, allowing the "Blue" state.
+        }
     }
     
     var borderColor: Color {
