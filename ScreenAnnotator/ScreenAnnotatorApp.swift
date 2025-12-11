@@ -155,13 +155,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // 2. Escape Key Handling
             if event.keyCode == KeyCode.escape {
                 
-                // PRIORITY 1: Hide Color Panel if active
-                if NSColorPanel.shared.isVisible && NSColorPanel.shared.isKeyWindow {
+                // PRIORITY 1: Hide Color Panel if visible
+                // We rely on isVisible because isKeyWindow is unreliable for Floating Panels
+                if NSColorPanel.shared.isVisible {
                     NSColorPanel.shared.close()
+                    self.canCloseColorPanel = false
                     return nil // Consume event
                 }
                 
-                // PRIORITY 2: Handle Text Editing
+                // PRIORITY 2: Toolbar Focus
+                // If toolbar is active, Escape should shift focus back to Canvas, NOT quit app
+                if let toolbar = self.toolbarWindow, toolbar.isKeyWindow {
+                    self.overlayWindow?.makeKey()
+                    return nil
+                }
+                
+                // PRIORITY 3: Handle Text Editing
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if isEditing {
@@ -174,6 +183,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     self.idToFocus = nil
                     return nil
                 } else if self.isDrawingMode {
+                    // State: Idle -> Escape -> Exit App
                     self.isDrawingMode = false
                     return nil
                 }
