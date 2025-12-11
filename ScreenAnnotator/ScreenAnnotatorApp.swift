@@ -66,13 +66,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupGlobalHotKey()
     }
     
-    // Fix: Force System Color Panel to be above the Overlay
+    // Fix: Ensure Color Panel is clickable by strictly managing Z-levels
     func setupColorPanel() {
-        // The overlay is at .screenSaver level.
-        // The toolbar is at .screenSaver + 1.
-        // We set the color panel to .screenSaver + 2 to ensure it floats on top of everything.
-        NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 2)
-        NSColorPanel.shared.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        let panel = NSColorPanel.shared
+        // We use .floating + 2.
+        // Hierarchy: Overlay (.floating) -> Toolbar (.floating + 1) -> ColorPanel (.floating + 2)
+        panel.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false // Prevent it from getting lost
+        
+        // Fix 1: Ensure hidden on launch
+        panel.orderOut(nil)
+        
+        // Fix 2: Re-apply level whenever the app becomes active or the panel is keyed
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { _ in
+            panel.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
+        }
     }
     
     func setupMenuBar() {
@@ -102,52 +111,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             // 2. Escape Key Handling
             if event.keyCode == KeyCode.escape {
-                // Check if a Text Field is currently the responder (Edit Mode / Green)
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if isEditing {
-                    // State: Editing (Green) -> Escape -> Selected (Blue)
-                    // We resign focus, but keep selectedAnnotationID set.
                     self.overlayWindow?.makeFirstResponder(nil)
                     self.idToFocus = nil
-                    // IMPORTANT: We do NOT clear selectedAnnotationID here.
                     return nil
                 } else if self.selectedAnnotationID != nil {
-                    // State: Selected (Blue) -> Escape -> Deselected
                     self.cleanupEmptyTextNodes()
                     self.selectedAnnotationID = nil
                     self.idToFocus = nil
                     return nil
                 } else if self.isDrawingMode {
-                    // State: Idle -> Escape -> Exit App
                     self.isDrawingMode = false
                     return nil
                 }
             }
             
-            // 3. Handle Text Box Logic (Delete vs Type)
+            // 3. Handle Text Box Logic
             if self.selectedAnnotationID != nil {
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 // DELETE Key
                 if event.keyCode == KeyCode.delete || event.keyCode == KeyCode.forwardDelete {
                     if isEditing {
-                        return event // Let TextField handle text deletion
+                        return event
                     } else {
-                        self.deleteSelectedAnnotation() // Delete the whole box
+                        self.deleteSelectedAnnotation()
                         return nil
                     }
                 }
                 
-                // PRINTABLE Keys (Auto-switch to Edit Mode)
+                // PRINTABLE Keys
                 if !isEditing,
                    let chars = event.characters,
                    !chars.isEmpty,
                    event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
                     
-                    self.idToFocus = self.selectedAnnotationID // Enter Edit Mode
-                    
-                    // Append character manually since focus wasn't there yet
+                    self.idToFocus = self.selectedAnnotationID
                     if let index = self.annotations.firstIndex(where: { $0.id == self.selectedAnnotationID }) {
                         if case .text(let existingText, let loc) = self.annotations[index].type {
                             self.annotations[index].type = .text(existingText + chars, loc)
@@ -190,7 +191,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         overlayWindow?.isOpaque = false
         overlayWindow?.ignoresMouseEvents = true
         overlayWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        overlayWindow?.level = .screenSaver
+        
+        // LEVEL: Floating (3) - High enough to be over apps, low enough to allow panels
+        overlayWindow?.level = .floating
+        
         overlayWindow?.orderOut(nil)
     }
     
@@ -206,7 +210,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         toolbarWindow?.backgroundColor = .clear
         toolbarWindow?.isOpaque = false
         toolbarWindow?.hasShadow = true
-        toolbarWindow?.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 1)
+        
+        // LEVEL: Floating + 1 - Above Overlay
+        toolbarWindow?.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 1)
+        
         toolbarWindow?.sharingType = .none
         toolbarWindow?.orderOut(nil)
     }
@@ -221,11 +228,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             overlayWindow?.ignoresMouseEvents = false
             toolbarWindow?.makeKeyAndOrderFront(nil)
             resetAutoHideTimer()
-            // Re-apply Z-Order fix every time we activate to be safe
-            NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 2)
+            
+            // Re-assert levels on activation
+            NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
+            
             NSCursor.crosshair.push()
         } else {
-            cleanupEmptyTextNodes() // Clean up before hiding
+            cleanupEmptyTextNodes()
             overlayWindow?.ignoresMouseEvents = true
             overlayWindow?.orderOut(nil)
             toolbarWindow?.orderOut(nil)
