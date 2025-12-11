@@ -67,10 +67,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupMenuBar()
         setupOverlayWindow()
         setupToolbarWindow()
-        setupColorPanel() // <--- Fix for Color Picker Z-Order
+        setupColorPanel() // Fix for Color Picker Z-Order
         setupGlobalHotKey()
-        setupColorPanelAutoClose() // <--- New: Auto-hide logic
-        setupColorSelectionObserver() // <--- New: Watch for color changes
+        setupColorPanelAutoClose() // Auto-hide logic for Color Panel
+        setupColorSelectionObserver() // Watch for color changes
+        setupAutoFocusLogic() // <--- NEW: Auto-focus Canvas logic
     }
     
     // Fix: Ensure Color Panel is clickable by strictly managing Z-levels
@@ -105,7 +106,36 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .store(in: &cancellables)
     }
     
-    // NEW: Auto-close Color Panel when mouse leaves it
+    // NEW: Auto-focus Canvas when mouse leaves tools
+    func setupAutoFocusLogic() {
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            guard let self = self, self.isDrawingMode else { return event }
+            
+            let mouseLocation = NSEvent.mouseLocation
+            
+            // Define frames for tools
+            let toolbarFrame = self.toolbarWindow?.frame ?? .zero
+            let colorPanelFrame = NSColorPanel.shared.isVisible ? NSColorPanel.shared.frame : .zero
+            
+            // Check if mouse is hovering over any tool (with small 5px buffer)
+            // If the tool is hidden (width/height 0 or not visible), contains will fail safely.
+            let overToolbar = toolbarFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
+            let overColorPanel = NSColorPanel.shared.isVisible && colorPanelFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
+            
+            if !overToolbar && !overColorPanel {
+                // Mouse is free (over canvas area).
+                // If Canvas isn't already the Key Window, make it Key immediately.
+                // This ensures the next click draws immediately instead of just focusing the window.
+                if self.overlayWindow?.isKeyWindow == false {
+                    self.overlayWindow?.makeKey()
+                }
+            }
+            
+            return event
+        }
+    }
+    
+    // Auto-close Color Panel logic
     func setupColorPanelAutoClose() {
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             guard let self = self else { return event }
@@ -114,8 +144,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // Only run logic if panel is actually visible AND we have picked a color
             if panel.isVisible && self.canCloseColorPanel {
                 let mouseLocation = NSEvent.mouseLocation
-                // Check if mouse is outside the panel frame
-                // We add a small buffer (10px) so it doesn't close instantly on the edge
                 let paddedFrame = panel.frame.insetBy(dx: -10, dy: -10)
                 
                 if !paddedFrame.contains(mouseLocation) {
@@ -156,21 +184,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if event.keyCode == KeyCode.escape {
                 
                 // PRIORITY 1: Hide Color Panel if visible
-                // We rely on isVisible because isKeyWindow is unreliable for Floating Panels
                 if NSColorPanel.shared.isVisible {
                     NSColorPanel.shared.close()
                     self.canCloseColorPanel = false
                     return nil // Consume event
                 }
                 
-                // PRIORITY 2: Toolbar Focus
-                // If toolbar is active, Escape should shift focus back to Canvas, NOT quit app
+                // PRIORITY 2: Toolbar Focus -> Canvas
                 if let toolbar = self.toolbarWindow, toolbar.isKeyWindow {
                     self.overlayWindow?.makeKey()
                     return nil
                 }
                 
-                // PRIORITY 3: Handle Text Editing
+                // PRIORITY 3: Handle Text Editing / Selection / Exit
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if isEditing {
@@ -183,7 +209,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                     self.idToFocus = nil
                     return nil
                 } else if self.isDrawingMode {
-                    // State: Idle -> Escape -> Exit App
                     self.isDrawingMode = false
                     return nil
                 }
@@ -193,17 +218,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             if self.selectedAnnotationID != nil {
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
-                // DELETE Key
                 if event.keyCode == KeyCode.delete || event.keyCode == KeyCode.forwardDelete {
-                    if isEditing {
-                        return event
-                    } else {
+                    if isEditing { return event }
+                    else {
                         self.deleteSelectedAnnotation()
                         return nil
                     }
                 }
                 
-                // PRINTABLE Keys
                 if !isEditing,
                    let chars = event.characters,
                    !chars.isEmpty,
