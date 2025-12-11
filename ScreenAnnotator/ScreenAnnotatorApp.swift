@@ -33,7 +33,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     
     // Flag to control Color Panel auto-hiding
-    // It starts false, becomes true only after user picks a color.
     private var canCloseColorPanel = false
     
     @Published var isDrawingMode = false {
@@ -42,16 +41,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     @Published var annotations: [Annotation] = []
     @Published var selectedAnnotationID: UUID? = nil
-    
-    // Triggers focus programmatically
     @Published var idToFocus: UUID? = nil
     
     @Published var currentTool: ToolType = .pen {
         didSet {
             cleanupEmptyTextNodes()
             selectedAnnotationID = nil
+            // Update click-through state immediately when tool changes
+            updateOverlayClickThroughState()
         }
     }
+    
     @Published var selectedColor: Color = .red
     @Published var lineWidth: CGFloat = 5.0
     
@@ -67,38 +67,45 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupMenuBar()
         setupOverlayWindow()
         setupToolbarWindow()
-        setupColorPanel() // Fix for Color Picker Z-Order
+        setupColorPanel()
         setupGlobalHotKey()
-        setupColorPanelAutoClose() // Auto-hide logic for Color Panel
-        setupColorSelectionObserver() // Watch for color changes
-        setupAutoFocusLogic() // <--- NEW: Auto-focus Canvas logic
+        setupColorPanelAutoClose()
+        setupColorSelectionObserver()
+        setupAutoFocusLogic()
     }
     
-    // Fix: Ensure Color Panel is clickable by strictly managing Z-levels
+    // Logic to handle Click-Through (Cursor Mode)
+    func updateOverlayClickThroughState() {
+        guard isDrawingMode else { return }
+        
+        if currentTool == .cursor {
+            // Interaction Mode: Let clicks pass through to background apps
+            overlayWindow?.ignoresMouseEvents = true
+            NSCursor.arrow.set()
+        } else {
+            // Drawing Mode: Capture clicks on the overlay
+            overlayWindow?.ignoresMouseEvents = false
+            NSCursor.crosshair.push()
+        }
+    }
+    
     func setupColorPanel() {
         let panel = NSColorPanel.shared
-        // We use .floating + 2.
-        // Hierarchy: Overlay (.floating) -> Toolbar (.floating + 1) -> ColorPanel (.floating + 2)
         panel.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.hidesOnDeactivate = false // Prevent it from getting lost
-        
-        // Fix 1: Ensure hidden on launch
+        panel.hidesOnDeactivate = false
         panel.orderOut(nil)
         
-        // Fix 2: Re-apply level whenever the app becomes active or the panel is keyed
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { [weak self] _ in
             panel.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
-            // Reset the close flag whenever the panel gets focus (user opened it or clicked it)
             self?.canCloseColorPanel = false
         }
     }
     
     func setupColorSelectionObserver() {
         $selectedColor
-            .dropFirst() // Ignore the initial value on app launch
+            .dropFirst()
             .sink { [weak self] _ in
-                // User picked a color -> Enable auto-close logic
                 if NSColorPanel.shared.isVisible {
                     self?.canCloseColorPanel = true
                 }
@@ -106,26 +113,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             .store(in: &cancellables)
     }
     
-    // NEW: Auto-focus Canvas when mouse leaves tools
     func setupAutoFocusLogic() {
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
-            guard let self = self, self.isDrawingMode else { return event }
+            // Skip logic if we are in Cursor (Click-Through) mode
+            guard let self = self, self.isDrawingMode, self.currentTool != .cursor else { return event }
             
             let mouseLocation = NSEvent.mouseLocation
             
-            // Define frames for tools
             let toolbarFrame = self.toolbarWindow?.frame ?? .zero
             let colorPanelFrame = NSColorPanel.shared.isVisible ? NSColorPanel.shared.frame : .zero
             
-            // Check if mouse is hovering over any tool (with small 5px buffer)
-            // If the tool is hidden (width/height 0 or not visible), contains will fail safely.
             let overToolbar = toolbarFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
             let overColorPanel = NSColorPanel.shared.isVisible && colorPanelFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
             
             if !overToolbar && !overColorPanel {
-                // Mouse is free (over canvas area).
-                // If Canvas isn't already the Key Window, make it Key immediately.
-                // This ensures the next click draws immediately instead of just focusing the window.
                 if self.overlayWindow?.isKeyWindow == false {
                     self.overlayWindow?.makeKey()
                 }
@@ -135,20 +136,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         }
     }
     
-    // Auto-close Color Panel logic
     func setupColorPanelAutoClose() {
         NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
             guard let self = self else { return event }
             let panel = NSColorPanel.shared
             
-            // Only run logic if panel is actually visible AND we have picked a color
             if panel.isVisible && self.canCloseColorPanel {
                 let mouseLocation = NSEvent.mouseLocation
                 let paddedFrame = panel.frame.insetBy(dx: -10, dy: -10)
                 
                 if !paddedFrame.contains(mouseLocation) {
                     panel.close()
-                    self.canCloseColorPanel = false // Reset
+                    self.canCloseColorPanel = false
                 }
             }
             return event
@@ -174,29 +173,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             
-            // 1. Toggle Shortcut
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
                 self.isDrawingMode.toggle()
                 return nil
             }
             
-            // 2. Escape Key Handling
             if event.keyCode == KeyCode.escape {
-                
-                // PRIORITY 1: Hide Color Panel if visible
                 if NSColorPanel.shared.isVisible {
                     NSColorPanel.shared.close()
                     self.canCloseColorPanel = false
-                    return nil // Consume event
+                    return nil
                 }
                 
-                // PRIORITY 2: Toolbar Focus -> Canvas
                 if let toolbar = self.toolbarWindow, toolbar.isKeyWindow {
                     self.overlayWindow?.makeKey()
                     return nil
                 }
                 
-                // PRIORITY 3: Handle Text Editing / Selection / Exit
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if isEditing {
@@ -214,7 +207,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             }
             
-            // 3. Handle Text Box Logic
             if self.selectedAnnotationID != nil {
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
@@ -274,16 +266,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         overlayWindow?.isOpaque = false
         overlayWindow?.ignoresMouseEvents = true
         overlayWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        
-        // LEVEL: Floating (3) - High enough to be over apps, low enough to allow panels
         overlayWindow?.level = .floating
-        
         overlayWindow?.orderOut(nil)
     }
     
     func setupToolbarWindow() {
         toolbarWindow = ToolbarWindow(
-            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 440, height: 80),
+            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 480, height: 80), // Widened slightly
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -293,10 +282,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         toolbarWindow?.backgroundColor = .clear
         toolbarWindow?.isOpaque = false
         toolbarWindow?.hasShadow = true
-        
-        // LEVEL: Floating + 1 - Above Overlay
         toolbarWindow?.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 1)
-        
         toolbarWindow?.sharingType = .none
         toolbarWindow?.orderOut(nil)
     }
@@ -308,14 +294,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func toggleDrawingMode(_ active: Bool) {
         if active {
             overlayWindow?.makeKeyAndOrderFront(nil)
-            overlayWindow?.ignoresMouseEvents = false
+            // Initial state check - if cursor tool was left selected, ensure passthrough works
+            updateOverlayClickThroughState()
+            
             toolbarWindow?.makeKeyAndOrderFront(nil)
             resetAutoHideTimer()
             
-            // Re-assert levels on activation
             NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
-            
-            NSCursor.crosshair.push()
         } else {
             cleanupEmptyTextNodes()
             overlayWindow?.ignoresMouseEvents = true
@@ -354,6 +339,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
 // MARK: - Models
 enum ToolType: String, CaseIterable {
+    case cursor // New Interaction Mode
     case pen, highlighter, rectangle, circle, text, eraser
 }
 
@@ -384,14 +370,9 @@ struct CanvasView: View {
             Color.white.opacity(0.0001)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    // CLEANUP on Blur
                     appDelegate.cleanupEmptyTextNodes()
-                    
-                    // Click outside -> Deselect everything
                     appDelegate.selectedAnnotationID = nil
                     appDelegate.idToFocus = nil
-                    
-                    // Force unfocus
                     NSApp.keyWindow?.makeFirstResponder(nil)
                 }
             
@@ -416,10 +397,15 @@ struct CanvasView: View {
         .gesture(
             DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { value in
+                    // Disable drawing gesture if in Cursor mode
+                    if appDelegate.currentTool == .cursor { return }
+                    
                     handleDragChange(value)
                     appDelegate.resetAutoHideTimer()
                 }
                 .onEnded { value in
+                    if appDelegate.currentTool == .cursor { return }
+                    
                     handleDragEnd(value)
                     appDelegate.resetAutoHideTimer()
                 }
@@ -443,7 +429,6 @@ struct CanvasView: View {
             Ellipse().stroke(annotation.wrappedValue.color, lineWidth: annotation.wrappedValue.width)
                 .frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
         case .text(let str, let loc):
-            // Use a binding to the text content for the TextField
             TextNodeView(
                 text: Binding(
                     get: { str },
@@ -497,69 +482,57 @@ struct CanvasView: View {
         case .circle:
             appDelegate.annotations.append(Annotation(type: .circle(rect), color: appDelegate.selectedColor, width: appDelegate.lineWidth))
         case .text:
-            // Start Empty
             let newText = Annotation(type: .text("", end), color: appDelegate.selectedColor, width: 0)
             appDelegate.annotations.append(newText)
             appDelegate.selectedAnnotationID = newText.id
-            appDelegate.idToFocus = newText.id // Auto-Enter Edit Mode
+            appDelegate.idToFocus = newText.id
         case .eraser:
             appDelegate.clearArea(in: rect)
+        default: break
         }
         dragStart = nil
         dragCurrent = nil
     }
 }
 
-// MARK: - UI: Text Node with Auto-Resize
+// MARK: - UI: Text Node
 struct TextNodeView: View {
     @Binding var text: String
     var color: Color
     var location: CGPoint
     var id: UUID
-    
     @EnvironmentObject var appDelegate: AppDelegate
     @FocusState private var isFocused: Bool
     
     var isSelected: Bool { appDelegate.selectedAnnotationID == id }
     
     var body: some View {
-        // ZStack technique for Auto-Width TextField
         ZStack {
-            // 1. Invisible Text used for sizing
-            // We verify text is not empty for size calc, else use placeholder size
             Text(text.isEmpty ? "Type here" : text)
                 .font(.system(size: 24, weight: .bold))
                 .opacity(0)
                 .padding(8)
-            
-            // 2. The Actual Input Field
             TextField("Type here", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 24, weight: .bold))
                 .foregroundColor(color)
                 .padding(8)
-                // Ensure it has at least some width to be clickable if empty
                 .frame(minWidth: 50)
                 .focused($isFocused)
         }
-        // This fixedSize tells the parent to respect the ideal size (determined by the hidden Text)
         .fixedSize()
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .stroke(borderColor, lineWidth: 2)
                 .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
         )
-        // Position centers the view at the coordinates
         .position(location)
         .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
-        // Handle Interactions
         .onTapGesture {
             appDelegate.selectedAnnotationID = id
-            // Single tap on Blue = Blue. Single tap on unselected = Blue.
         }
         .simultaneousGesture(
             TapGesture(count: 2).onEnded {
-                // Double click -> Edit Mode
                 appDelegate.selectedAnnotationID = id
                 appDelegate.idToFocus = id
             }
@@ -568,18 +541,12 @@ struct TextNodeView: View {
             if newId == id { isFocused = true }
         }
         .onChange(of: isFocused) { focused in
-            if focused {
-                // If focus gained, ensure we track selection
-                appDelegate.selectedAnnotationID = id
-            }
-            // If focus lost, we don't clear selectedAnnotationID here, allowing the "Blue" state.
+            if focused { appDelegate.selectedAnnotationID = id }
         }
     }
     
     var borderColor: Color {
-        if isSelected {
-            return isFocused ? .green : .blue
-        }
+        if isSelected { return isFocused ? .green : .blue }
         return .clear
     }
 }
@@ -591,6 +558,12 @@ struct ControlPanel: View {
         HStack(spacing: 12) {
             Image(systemName: "line.3.horizontal").foregroundColor(.secondary)
             HStack(spacing: 4) {
+                // New Cursor / Interaction Tool
+                ToolButton(icon: "cursorarrow", tool: .cursor)
+                    .help("Interaction Mode (Click-Through)")
+                
+                Divider().frame(height: 16)
+                
                 ToolButton(icon: "pencil", tool: .pen)
                 ToolButton(icon: "highlighter", tool: .highlighter)
                 ToolButton(icon: "square", tool: .rectangle)
@@ -649,43 +622,31 @@ struct SettingsView: View {
 }
 
 // MARK: - Helpers
-
-// 1. Fixed "First Click" Issue by forcing Key Window status
 class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     
     override func mouseDown(with event: NSEvent) {
-        // FORCE this window to be the key window on the very first click
-        // preventing the "one click to wake, two clicks to work" issue.
         self.makeKey()
         super.mouseDown(with: event)
     }
 }
 
-// 2. Toolbar Snapping
 class ToolbarWindow: NSWindow {
     override var canBecomeKey: Bool { true }
-    
     override func mouseDown(with event: NSEvent) {
-        // performDrag blocks until the user releases the mouse button
         self.performDrag(with: event)
-        // Since execution resumes here AFTER drag ends, we snap immediately
         snapToEdges()
     }
-    
     func snapToEdges() {
         if let screen = self.screen {
             let visible = screen.visibleFrame
             var origin = self.frame.origin
             let snap: CGFloat = 30.0
-            
-            // Snap logic
             if abs(frame.minX - visible.minX) < snap { origin.x = visible.minX }
             if abs(frame.maxX - visible.maxX) < snap { origin.x = visible.maxX - frame.width }
             if abs(frame.minY - visible.minY) < snap { origin.y = visible.minY }
             if abs(frame.maxY - visible.maxY) < snap { origin.y = visible.maxY - frame.height }
-            
             self.setFrameOrigin(origin)
         }
     }
@@ -715,7 +676,6 @@ extension Array where Element == CGPoint {
     }
 }
 
-// MARK: - Legacy Key Codes Replacement
 struct KeyCode {
     static let a: Int = 0x00
     static let s: Int = 0x01
