@@ -341,12 +341,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func toggleDrawingMode(_ active: Bool) {
+        // Update Menu Bar Icon State (Bold when active)
+        if let button = statusItem?.button {
+            let config = NSImage.SymbolConfiguration(pointSize: 15, weight: active ? .heavy : .regular)
+            button.image = NSImage(systemSymbolName: "pencil.and.outline", accessibilityDescription: "Annotate")?.withSymbolConfiguration(config)
+        }
+
         if active {
+            // 1. Show Toolbar (Show only, don't focus yet)
+            toolbarWindow?.orderFront(nil)
+            
+            // 2. Show Overlay and FORCE it to be the Key Window so drawing works immediately
             overlayWindow?.makeKeyAndOrderFront(nil)
+            
             // Initial state check - if cursor tool was left selected, ensure passthrough works
             updateOverlayClickThroughState()
             
-            toolbarWindow?.makeKeyAndOrderFront(nil)
             resetAutoHideTimer()
             
             NSColorPanel.shared.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
