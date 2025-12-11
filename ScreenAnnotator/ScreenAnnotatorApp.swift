@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement // Required for Launch at Login
 // import Carbon // Removed deprecated import
 import Combine
 
@@ -90,8 +91,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Redundant call removed here, as it is now in App.init() for earlier execution
-        
         // Apply Default Color on Launch
         self.selectedColor = defaultColor
         
@@ -109,7 +108,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func openSettings() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 400, height: 320),
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 360), // Increased height for new option
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered,
                 defer: false
@@ -750,6 +749,9 @@ struct SettingsView: View {
     @AppStorage("shortcutText") var shortcutText: String = "t"
     @AppStorage("shortcutEraser") var shortcutEraser: String = "e"
     
+    // NEW: Launch at Login State
+    @State private var launchAtLogin = false
+    
     var body: some View {
         TabView {
             Form {
@@ -759,6 +761,24 @@ struct SettingsView: View {
                         Slider(value: $autoHideDelay, in: 1.0...10.0, step: 0.5) { Text("\(String(format: "%.1f", autoHideDelay))s") }
                     }
                 }
+                
+                // NEW SECTION: Startup
+                Section(header: Text("Startup")) {
+                    if #available(macOS 13.0, *) {
+                        Toggle("Launch at Login", isOn: $launchAtLogin)
+                            .onChange(of: launchAtLogin) { newValue in
+                                toggleLaunchAtLogin(newValue)
+                            }
+                            .onAppear {
+                                updateLaunchState()
+                            }
+                    } else {
+                        Text("Launch at login requires macOS 13 or newer.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                
                 Section(header: Text("Defaults")) {
                     ColorPicker("Starting Color", selection: $defaultColor)
                 }
@@ -778,7 +798,29 @@ struct SettingsView: View {
             }
             .padding().tabItem { Text("Shortcuts") }
         }
-        .frame(width: 400, height: 300)
+        .frame(width: 400, height: 360)
+    }
+    
+    // NEW METHODS for Launch at Login
+    @available(macOS 13.0, *)
+    func updateLaunchState() {
+        launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+    
+    @available(macOS 13.0, *)
+    func toggleLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                if SMAppService.mainApp.status == .enabled { return }
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            print("Failed to toggle launch at login: \(error)")
+            // Revert state if failed
+            launchAtLogin = !enabled
+        }
     }
     
     // Helper to keep shortcut field simple
