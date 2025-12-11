@@ -26,8 +26,21 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var overlayWindow: OverlayWindow?
     var toolbarWindow: ToolbarWindow?
     
+    // --- PREFERENCES ---
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
     @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
+    
+    // Default Color Persistence
+    @AppStorage("defaultColor") var defaultColor: Color = .red
+    
+    // Tool Shortcuts (Single Character Strings)
+    @AppStorage("shortcutCursor") var shortcutCursor: String = "v"
+    @AppStorage("shortcutPen") var shortcutPen: String = "p"
+    @AppStorage("shortcutHighlighter") var shortcutHighlighter: String = "h"
+    @AppStorage("shortcutRect") var shortcutRect: String = "r"
+    @AppStorage("shortcutCircle") var shortcutCircle: String = "c"
+    @AppStorage("shortcutText") var shortcutText: String = "t"
+    @AppStorage("shortcutEraser") var shortcutEraser: String = "e"
     
     private var hideTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
@@ -64,6 +77,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Apply Default Color on Launch
+        self.selectedColor = defaultColor
+        
         setupMenuBar()
         setupOverlayWindow()
         setupToolbarWindow()
@@ -173,11 +189,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             
+            // 1. Toggle Shortcut
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
                 self.isDrawingMode.toggle()
                 return nil
             }
             
+            // 2. Escape Key Handling
             if event.keyCode == KeyCode.escape {
                 if NSColorPanel.shared.isVisible {
                     NSColorPanel.shared.close()
@@ -207,8 +225,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 }
             }
             
+            // Check if user is typing in a text field
+            let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
+            
+            // 3. Handle Tool Shortcuts (Only if NOT editing text)
+            if self.isDrawingMode && !isEditing, let chars = event.charactersIgnoringModifiers?.lowercased() {
+                if chars == self.shortcutCursor.lowercased() { self.currentTool = .cursor; return nil }
+                if chars == self.shortcutPen.lowercased() { self.currentTool = .pen; return nil }
+                if chars == self.shortcutHighlighter.lowercased() { self.currentTool = .highlighter; return nil }
+                if chars == self.shortcutRect.lowercased() { self.currentTool = .rectangle; return nil }
+                if chars == self.shortcutCircle.lowercased() { self.currentTool = .circle; return nil }
+                if chars == self.shortcutText.lowercased() { self.currentTool = .text; return nil }
+                if chars == self.shortcutEraser.lowercased() { self.currentTool = .eraser; return nil }
+            }
+            
+            // 4. Handle Text Box Logic
             if self.selectedAnnotationID != nil {
-                let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if event.keyCode == KeyCode.delete || event.keyCode == KeyCode.forwardDelete {
                     if isEditing { return event }
@@ -272,7 +304,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func setupToolbarWindow() {
         toolbarWindow = ToolbarWindow(
-            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 480, height: 80), // Widened slightly
+            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 480, height: 80),
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -334,6 +366,34 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         selectedAnnotationID = nil
+    }
+}
+
+// MARK: - Persistence Extensions
+// Allows storing Color in AppStorage as a JSON string
+extension Color: RawRepresentable {
+    public init?(rawValue: String) {
+        guard let data = rawValue.data(using: .utf8),
+              let components = try? JSONDecoder().decode([Double].self, from: data) else {
+            return nil
+        }
+        self = Color(.sRGB, red: components[0], green: components[1], blue: components[2], opacity: components[3])
+    }
+    
+    public var rawValue: String {
+        guard let cgColor = self.cgColor else { return "[]" }
+        // Fallback to components or basic white if fails
+        let comps = cgColor.components ?? [1, 1, 1, 1]
+        // Ensure we have 4 components (some gray colors only have 2)
+        var rgba = comps
+        if rgba.count == 2 {
+            rgba = [rgba[0], rgba[0], rgba[0], rgba[1]]
+        } else if rgba.count < 4 {
+            rgba = [1, 1, 1, 1]
+        }
+        
+        guard let data = try? JSONEncoder().encode(rgba) else { return "[]" }
+        return String(data: data, encoding: .utf8) ?? "[]"
     }
 }
 
@@ -560,16 +620,16 @@ struct ControlPanel: View {
             HStack(spacing: 4) {
                 // New Cursor / Interaction Tool
                 ToolButton(icon: "cursorarrow", tool: .cursor)
-                    .help("Interaction Mode (Click-Through)")
+                    .help("Interaction Mode (Click-Through) [\(appDelegate.shortcutCursor.uppercased())]")
                 
                 Divider().frame(height: 16)
                 
-                ToolButton(icon: "pencil", tool: .pen)
-                ToolButton(icon: "highlighter", tool: .highlighter)
-                ToolButton(icon: "square", tool: .rectangle)
-                ToolButton(icon: "circle", tool: .circle)
-                ToolButton(icon: "textformat", tool: .text)
-                ToolButton(icon: "eraser", tool: .eraser)
+                ToolButton(icon: "pencil", tool: .pen).help("Pen [\(appDelegate.shortcutPen.uppercased())]")
+                ToolButton(icon: "highlighter", tool: .highlighter).help("Highlighter [\(appDelegate.shortcutHighlighter.uppercased())]")
+                ToolButton(icon: "square", tool: .rectangle).help("Rectangle [\(appDelegate.shortcutRect.uppercased())]")
+                ToolButton(icon: "circle", tool: .circle).help("Circle [\(appDelegate.shortcutCircle.uppercased())]")
+                ToolButton(icon: "textformat", tool: .text).help("Text [\(appDelegate.shortcutText.uppercased())]")
+                ToolButton(icon: "eraser", tool: .eraser).help("Eraser [\(appDelegate.shortcutEraser.uppercased())]")
             }
             .padding(4).background(Color.black.opacity(0.1)).cornerRadius(8)
             Divider().frame(height: 24)
@@ -608,16 +668,58 @@ struct ControlPanel: View {
 struct SettingsView: View {
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
     @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
+    @AppStorage("defaultColor") var defaultColor: Color = .red
+    
+    // Shortcuts
+    @AppStorage("shortcutCursor") var shortcutCursor: String = "v"
+    @AppStorage("shortcutPen") var shortcutPen: String = "p"
+    @AppStorage("shortcutHighlighter") var shortcutHighlighter: String = "h"
+    @AppStorage("shortcutRect") var shortcutRect: String = "r"
+    @AppStorage("shortcutCircle") var shortcutCircle: String = "c"
+    @AppStorage("shortcutText") var shortcutText: String = "t"
+    @AppStorage("shortcutEraser") var shortcutEraser: String = "e"
+    
     var body: some View {
-        Form {
-            Section(header: Text("Toolbar")) {
-                Toggle("Auto-hide Toolbar", isOn: $autoHideEnabled)
-                if autoHideEnabled {
-                    Slider(value: $autoHideDelay, in: 1.0...10.0, step: 0.5) { Text("\(String(format: "%.1f", autoHideDelay))s") }
+        TabView {
+            Form {
+                Section(header: Text("Toolbar")) {
+                    Toggle("Auto-hide Toolbar", isOn: $autoHideEnabled)
+                    if autoHideEnabled {
+                        Slider(value: $autoHideDelay, in: 1.0...10.0, step: 0.5) { Text("\(String(format: "%.1f", autoHideDelay))s") }
+                    }
+                }
+                Section(header: Text("Defaults")) {
+                    ColorPicker("Starting Color", selection: $defaultColor)
                 }
             }
+            .padding().tabItem { Text("General") }
+            
+            Form {
+                Section(header: Text("Tool Shortcuts (Single Character)")) {
+                    HStack { Text("Cursor Mode"); Spacer(); ShortcutField(text: $shortcutCursor) }
+                    HStack { Text("Pen"); Spacer(); ShortcutField(text: $shortcutPen) }
+                    HStack { Text("Highlighter"); Spacer(); ShortcutField(text: $shortcutHighlighter) }
+                    HStack { Text("Rectangle"); Spacer(); ShortcutField(text: $shortcutRect) }
+                    HStack { Text("Circle"); Spacer(); ShortcutField(text: $shortcutCircle) }
+                    HStack { Text("Text"); Spacer(); ShortcutField(text: $shortcutText) }
+                    HStack { Text("Eraser"); Spacer(); ShortcutField(text: $shortcutEraser) }
+                }
+            }
+            .padding().tabItem { Text("Shortcuts") }
         }
-        .padding().frame(width: 300)
+        .frame(width: 400, height: 300)
+    }
+    
+    // Helper to keep shortcut field simple
+    func ShortcutField(text: Binding<String>) -> some View {
+        TextField("", text: text)
+            .multilineTextAlignment(.center)
+            .frame(width: 30)
+            .onChange(of: text.wrappedValue) { newValue in
+                if newValue.count > 1 {
+                    text.wrappedValue = String(newValue.prefix(1))
+                }
+            }
     }
 }
 
