@@ -30,6 +30,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
     
     private var hideTimer: Timer?
+    private var cancellables = Set<AnyCancellable>()
+    
+    // Flag to control Color Panel auto-hiding
+    // It starts false, becomes true only after user picks a color.
+    private var canCloseColorPanel = false
     
     @Published var isDrawingMode = false {
         didSet { toggleDrawingMode(isDrawingMode) }
@@ -64,6 +69,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupToolbarWindow()
         setupColorPanel() // <--- Fix for Color Picker Z-Order
         setupGlobalHotKey()
+        setupColorPanelAutoClose() // <--- New: Auto-hide logic
+        setupColorSelectionObserver() // <--- New: Watch for color changes
     }
     
     // Fix: Ensure Color Panel is clickable by strictly managing Z-levels
@@ -79,8 +86,44 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         panel.orderOut(nil)
         
         // Fix 2: Re-apply level whenever the app becomes active or the panel is keyed
-        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { _ in
+        NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { [weak self] _ in
             panel.level = NSWindow.Level(NSWindow.Level.floating.rawValue + 2)
+            // Reset the close flag whenever the panel gets focus (user opened it or clicked it)
+            self?.canCloseColorPanel = false
+        }
+    }
+    
+    func setupColorSelectionObserver() {
+        $selectedColor
+            .dropFirst() // Ignore the initial value on app launch
+            .sink { [weak self] _ in
+                // User picked a color -> Enable auto-close logic
+                if NSColorPanel.shared.isVisible {
+                    self?.canCloseColorPanel = true
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    // NEW: Auto-close Color Panel when mouse leaves it
+    func setupColorPanelAutoClose() {
+        NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            guard let self = self else { return event }
+            let panel = NSColorPanel.shared
+            
+            // Only run logic if panel is actually visible AND we have picked a color
+            if panel.isVisible && self.canCloseColorPanel {
+                let mouseLocation = NSEvent.mouseLocation
+                // Check if mouse is outside the panel frame
+                // We add a small buffer (10px) so it doesn't close instantly on the edge
+                let paddedFrame = panel.frame.insetBy(dx: -10, dy: -10)
+                
+                if !paddedFrame.contains(mouseLocation) {
+                    panel.close()
+                    self.canCloseColorPanel = false // Reset
+                }
+            }
+            return event
         }
     }
     
@@ -111,6 +154,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             // 2. Escape Key Handling
             if event.keyCode == KeyCode.escape {
+                
+                // PRIORITY 1: Hide Color Panel if active
+                if NSColorPanel.shared.isVisible && NSColorPanel.shared.isKeyWindow {
+                    NSColorPanel.shared.close()
+                    return nil // Consume event
+                }
+                
+                // PRIORITY 2: Handle Text Editing
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 if isEditing {
