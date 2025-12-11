@@ -3,12 +3,33 @@ import AppKit
 // import Carbon // Removed deprecated import
 import Combine
 
+/*
+ IMPORTANT SETUP FOR SEAMLESS LAUNCH:
+ To completely prevent the Dock icon from appearing or bouncing at launch,
+ you must edit your 'Info.plist' file in Xcode:
+ 1. Select your Target in Xcode.
+ 2. Go to the 'Info' tab.
+ 3. Add a new key: "Application is agent (UIElement)" (Raw key: LSUIElement).
+ 4. Set the value to "YES".
+ 
+ This code below attempts to hide it programmatically as early as possible,
+ but the Info.plist method is the only way to be 100% invisible to the Dock.
+*/
+
 // MARK: - Main Entry Point
 @main
 struct ScreenAnnotatorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
+    init() {
+        // Attempt to hide from Dock immediately on startup.
+        // Note: Info.plist 'LSUIElement' is required for this to be 100% seamless.
+        NSApp.setActivationPolicy(.accessory)
+    }
+
     var body: some Scene {
+        // Note: In .accessory mode, this Settings scene is not accessible via standard menus.
+        // We handle the Settings window manually in AppDelegate.
         Settings {
             SettingsView()
                 .environmentObject(appDelegate)
@@ -25,6 +46,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var statusItem: NSStatusItem?
     var overlayWindow: OverlayWindow?
     var toolbarWindow: ToolbarWindow?
+    var settingsWindow: NSWindow? // Manual reference for Settings Window
     
     // --- PREFERENCES ---
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
@@ -77,6 +99,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Redundant call removed here, as it is now in App.init() for earlier execution
+        
         // Apply Default Color on Launch
         self.selectedColor = defaultColor
         
@@ -88,6 +112,26 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupColorPanelAutoClose()
         setupColorSelectionObserver()
         setupAutoFocusLogic()
+    }
+    
+    // Manual Settings Window Management (Required for .accessory apps)
+    func openSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 320),
+                styleMask: [.titled, .closable, .miniaturizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.center()
+            window.title = "Screen Annotator Settings"
+            window.contentView = NSHostingView(rootView: SettingsView().environmentObject(self))
+            window.isReleasedWhenClosed = false // Keep window instance alive
+            settingsWindow = window
+        }
+        
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
     
     // Logic to handle Click-Through (Cursor Mode)
@@ -321,7 +365,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func setupToolbarWindow() {
         toolbarWindow = ToolbarWindow(
-            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 480, height: 80),
+            contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 520, height: 80), // Widened for settings button
             styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -665,6 +709,15 @@ struct ControlPanel: View {
                 Slider(value: $appDelegate.lineWidth, in: 2...20).frame(width: 40).accentColor(appDelegate.selectedColor)
             }
             Spacer()
+            // New Settings Button
+            Button(action: { appDelegate.openSettings() }) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+            
             Button(action: { appDelegate.clearAll() }) {
                 Image(systemName: "trash").foregroundColor(.red).frame(width: 24, height: 24)
             }.buttonStyle(.plain)
