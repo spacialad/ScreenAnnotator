@@ -287,18 +287,35 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     
     func setupOverlayWindow() {
         let screenRect = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 800, height: 600)
+        
+        // 1. Init Window
         overlayWindow = OverlayWindow(
             contentRect: screenRect,
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        overlayWindow?.contentView = NSHostingView(rootView: CanvasView().environmentObject(self))
+        
+        // 2. Setup SwiftUI View
+        // Added .edgesIgnoringSafeArea to prevent gaps that might render as background
+        let contentView = CanvasView()
+            .environmentObject(self)
+            .edgesIgnoringSafeArea(.all)
+        
+        // 3. Use Custom Transparent Hosting View
+        let hostingView = TransparentHostingView(rootView: contentView)
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        
+        // 4. Final Window Config
+        overlayWindow?.contentView = hostingView
         overlayWindow?.backgroundColor = .clear
         overlayWindow?.isOpaque = false
+        overlayWindow?.hasShadow = false // Ensure no shadow adds gray tint
         overlayWindow?.ignoresMouseEvents = true
         overlayWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         overlayWindow?.level = .floating
+        
         overlayWindow?.orderOut(nil)
     }
     
@@ -426,8 +443,8 @@ struct CanvasView: View {
     
     var body: some View {
         ZStack {
-            // Background Layer
-            Color.white.opacity(0.0001)
+            // Background Layer - Updated to be FULLY transparent but hit-testable
+            Color.clear
                 .contentShape(Rectangle())
                 .onTapGesture {
                     appDelegate.cleanupEmptyTextNodes()
@@ -724,9 +741,24 @@ struct SettingsView: View {
 }
 
 // MARK: - Helpers
+
+// Helper class to FORCE transparency on the hosting view
+class TransparentHostingView<Content: View>: NSHostingView<Content> {
+    override var isOpaque: Bool {
+        return false
+    }
+}
+
 class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    
+    override init(contentRect: NSRect, styleMask style: NSWindow.StyleMask, backing backingStoreType: NSWindow.BackingStoreType, defer flag: Bool) {
+        super.init(contentRect: contentRect, styleMask: style, backing: backingStoreType, defer: flag)
+        self.backgroundColor = .clear
+        self.isOpaque = false
+        self.hasShadow = false
+    }
     
     override func mouseDown(with event: NSEvent) {
         self.makeKey()
