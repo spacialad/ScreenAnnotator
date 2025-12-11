@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import Carbon
+// import Carbon // Removed deprecated import
 import Combine
 
 // MARK: - Main Entry Point
@@ -17,7 +17,7 @@ struct ScreenAnnotatorApp: App {
 }
 
 // MARK: - Global Constants
-let kGlobalToggleKey: Int = kVK_ANSI_A // 'A' Key
+let kGlobalToggleKey: Int = KeyCode.a // Updated to use local constant
 let kGlobalToggleModifiers: NSEvent.ModifierFlags = [.command, .option]
 
 // MARK: - App Delegate & State Management
@@ -91,7 +91,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
             
             // 2. Escape Key Handling
-            if event.keyCode == kVK_Escape {
+            if event.keyCode == KeyCode.escape {
                 // Check if a Text Field is currently the responder (Edit Mode / Green)
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
@@ -120,7 +120,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
                 
                 // DELETE Key
-                if event.keyCode == kVK_Delete || event.keyCode == kVK_ForwardDelete {
+                if event.keyCode == KeyCode.delete || event.keyCode == KeyCode.forwardDelete {
                     if isEditing {
                         return event // Let TextField handle text deletion
                     } else {
@@ -609,4 +609,121 @@ extension Array where Element == CGPoint {
         for p in self { r = r.union(CGRect(origin: p, size: .zero)) }
         return r
     }
+}
+
+// MARK: - Legacy Key Codes Replacement
+struct KeyCode {
+    static let a: Int = 0x00
+    static let s: Int = 0x01
+    static let d: Int = 0x02
+    static let f: Int = 0x03
+    static let h: Int = 0x04
+    static let g: Int = 0x05
+    static let z: Int = 0x06
+    static let x: Int = 0x07
+    static let c: Int = 0x08
+    static let v: Int = 0x09
+    static let b: Int = 0x0B
+    static let q: Int = 0x0C
+    static let w: Int = 0x0D
+    static let e: Int = 0x0E
+    static let r: Int = 0x0F
+    static let y: Int = 0x10
+    static let t: Int = 0x11
+    static let one: Int = 0x12
+    static let two: Int = 0x13
+    static let three: Int = 0x14
+    static let four: Int = 0x15
+    static let six: Int = 0x16
+    static let five: Int = 0x17
+    static let equal: Int = 0x18
+    static let nine: Int = 0x19
+    static let seven: Int = 0x1A
+    static let minus: Int = 0x1B
+    static let eight: Int = 0x1C
+    static let zero: Int = 0x1D
+    static let rightBracket: Int = 0x1E
+    static let o: Int = 0x1F
+    static let u: Int = 0x20
+    static let leftBracket: Int = 0x21
+    static let i: Int = 0x22
+    static let p: Int = 0x23
+    static let l: Int = 0x25
+    static let j: Int = 0x26
+    static let quote: Int = 0x27
+    static let k: Int = 0x28
+    static let semicolon: Int = 0x29
+    static let backslash: Int = 0x2A
+    static let comma: Int = 0x2B
+    static let slash: Int = 0x2C
+    static let n: Int = 0x2D
+    static let m: Int = 0x2E
+    static let period: Int = 0x2F
+    static let grave: Int = 0x32
+    static let keypadDecimal: Int = 0x41
+    static let keypadMultiply: Int = 0x43
+    static let keypadPlus: Int = 0x45
+    static let keypadClear: Int = 0x47
+    static let keypadDivide: Int = 0x4B
+    static let keypadEnter: Int = 0x4C
+    static let keypadMinus: Int = 0x4E
+    static let keypadEquals: Int = 0x51
+    static let keypad0: Int = 0x52
+    static let keypad1: Int = 0x53
+    static let keypad2: Int = 0x54
+    static let keypad3: Int = 0x55
+    static let keypad4: Int = 0x56
+    static let keypad5: Int = 0x57
+    static let keypad6: Int = 0x58
+    static let keypad7: Int = 0x59
+    static let keypad8: Int = 0x5B
+    static let keypad9: Int = 0x5C
+
+    static let `return`: Int = 0x24
+    static let tab: Int = 0x30
+    static let space: Int = 0x31
+    static let delete: Int = 0x33
+    static let escape: Int = 0x35
+    static let command: Int = 0x37
+    static let shift: Int = 0x38
+    static let capsLock: Int = 0x39
+    static let option: Int = 0x3A
+    static let control: Int = 0x3B
+    static let rightShift: Int = 0x3C
+    static let rightOption: Int = 0x3D
+    static let rightControl: Int = 0x3E
+    static let function: Int = 0x3F
+    static let f17: Int = 0x40
+    static let volumeUp: Int = 0x48
+    static let volumeDown: Int = 0x49
+    static let mute: Int = 0x4A
+    static let f18: Int = 0x4F
+    static let f19: Int = 0x50
+    static let f20: Int = 0x5A
+    static let f5: Int = 0x60
+    static let f6: Int = 0x61
+    static let f7: Int = 0x62
+    static let f3: Int = 0x63
+    static let f8: Int = 0x64
+    static let f9: Int = 0x65
+    static let f11: Int = 0x67
+    static let f13: Int = 0x69
+    static let f16: Int = 0x6A
+    static let f14: Int = 0x6B
+    static let f10: Int = 0x6D
+    static let f12: Int = 0x6F
+    static let f15: Int = 0x71
+    static let help: Int = 0x72
+    static let home: Int = 0x73
+    static let pageUp: Int = 0x74
+    static let forwardDelete: Int = 0x75
+    static let f4: Int = 0x76
+    static let end: Int = 0x77
+    static let f2: Int = 0x78
+    static let pageDown: Int = 0x79
+    static let f1: Int = 0x7A
+    static let leftArrow: Int = 0x7B
+    static let rightArrow: Int = 0x7C
+    static let downArrow: Int = 0x7D
+    static let upArrow: Int = 0x7E
 }
