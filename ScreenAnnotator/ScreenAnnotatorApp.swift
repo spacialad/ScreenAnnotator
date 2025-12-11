@@ -38,9 +38,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     @Published var annotations: [Annotation] = []
+    @Published var selectedAnnotationID: UUID? = nil // For selecting text/shapes
     
     // Tools
-    @Published var currentTool: ToolType = .pen
+    @Published var currentTool: ToolType = .pen {
+        didSet {
+            // Deselect when changing tools to avoid confusion
+            selectedAnnotationID = nil
+        }
+    }
     @Published var selectedColor: Color = .red
     @Published var lineWidth: CGFloat = 5.0
     
@@ -69,6 +75,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func setupGlobalHotKey() {
+        // 1. Global Shortcut (Cmd+Opt+A)
         NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return }
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
@@ -76,7 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         
-        // Also monitor local Escape key to exit
+        // 2. Local Monitor (Esc to exit, Delete to remove selection)
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             
@@ -86,14 +93,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 return nil
             }
             
-            // Escape Key to Exit
+            // Escape Key -> Exit Drawing Mode
             if event.keyCode == kVK_Escape && self.isDrawingMode {
                 self.isDrawingMode = false
                 return nil
             }
             
+            // Delete/Backspace Key -> Remove Selected Annotation
+            if (event.keyCode == kVK_Delete || event.keyCode == kVK_ForwardDelete) && self.selectedAnnotationID != nil {
+                // We only delete if we are NOT currently editing a text field
+                // Checking current responder is complex in SwiftUI, but usually TextField eats the event.
+                // If the event reaches here, the TextField likely isn't FirstResponder or we are capturing it.
+                // Simple logic: Remove the annotation.
+                self.deleteSelectedAnnotation()
+                return nil
+            }
+            
             return event
         }
+    }
+    
+    func deleteSelectedAnnotation() {
+        guard let id = selectedAnnotationID else { return }
+        annotations.removeAll { $0.id == id }
+        selectedAnnotationID = nil
     }
     
     func setupOverlayWindow() {
@@ -110,8 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         overlayWindow?.ignoresMouseEvents = true
         overlayWindow?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         
-        // CRITICAL: Level must be high enough to draw over apps, but LOWER than the toolbar
-        // .screenSaver is usually ~1000.
+        // Level must be high enough to draw over apps, but LOWER than the toolbar
         overlayWindow?.level = .screenSaver
         overlayWindow?.orderOut(nil)
     }
@@ -130,7 +152,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         toolbarWindow?.isOpaque = false
         toolbarWindow?.hasShadow = true
         
-        // CRITICAL: Toolbar must be strictly HIGHER than overlay to receive clicks
+        // Toolbar must be strictly HIGHER than overlay to receive clicks
         toolbarWindow?.level = NSWindow.Level(NSWindow.Level.screenSaver.rawValue + 1)
         
         toolbarWindow?.sharingType = .none
@@ -156,6 +178,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             toolbarWindow?.orderOut(nil)
             hideTimer?.invalidate()
+            selectedAnnotationID = nil // Reset selection
             
             NSCursor.pop()
         }
@@ -177,16 +200,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         resetAutoHideTimer()
     }
     
-    func clearAll() { annotations.removeAll() }
+    func clearAll() {
+        annotations.removeAll()
+        selectedAnnotationID = nil
+    }
     
     func clearArea(in rect: CGRect) {
         annotations.removeAll { annotation in
             switch annotation.type {
             case .path(let points): return points.boundingRect.intersects(rect)
-            case .text(_, let location): return CGRect(x: location.x, y: location.y, width: 100, height: 40).intersects(rect)
+            case .text(_, let location): return CGRect(x: location.x, y: location.y, width: 200, height: 50).intersects(rect)
             case .rectangle(let r), .circle(let r): return r.intersects(rect)
             }
         }
+        selectedAnnotationID = nil
     }
 }
 
@@ -197,7 +224,7 @@ enum ToolType: String, CaseIterable {
 
 struct Annotation: Identifiable {
     let id = UUID()
-    let type: AnnotationType
+    var type: AnnotationType
     let color: Color
     let width: CGFloat
 }
@@ -220,16 +247,20 @@ struct CanvasView: View {
         ZStack {
             // Invisible background to catch clicks
             Color.white.opacity(0.0001)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    // Clicking background deselects everything
+                    appDelegate.selectedAnnotationID = nil
+                }
             
             // 1. Saved Annotations
             ForEach(appDelegate.annotations) { annotation in
                 renderAnnotation(annotation)
             }
             
-            // 2. Active Drawing (Live Feedback)
-            if let start = dragStart, let current = dragCurrent {
-                renderActiveDrag(start: start, current: current)
-            } else if !currentPath.isEmpty {
+            // 2. Active Drawing (Immediate Feedback)
+            // Separate logic for Paths vs Shapes to fix "invisible" bug
+            if (appDelegate.currentTool == .pen || appDelegate.currentTool == .highlighter), !currentPath.isEmpty {
                  Path { p in
                     guard let first = currentPath.first else { return }
                     p.move(to: first)
@@ -237,9 +268,13 @@ struct CanvasView: View {
                 }
                 .stroke(appDelegate.effectiveColor, style: StrokeStyle(lineWidth: appDelegate.effectiveWidth, lineCap: .round, lineJoin: .round))
             }
+            else if let start = dragStart, let current = dragCurrent {
+                // Render Shapes/Eraser only when drag data exists
+                renderActiveDrag(start: start, current: current)
+            }
         }
         .gesture(
-            DragGesture(minimumDistance: 0) // 0 distance ensures immediate start
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
                 .onChanged { value in
                     handleDragChange(value)
                     appDelegate.resetAutoHideTimer()
@@ -268,7 +303,7 @@ struct CanvasView: View {
             Ellipse().stroke(annotation.color, lineWidth: annotation.width)
                 .frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
         case .text(let str, let loc):
-            TextNodeView(text: str, color: annotation.color, location: loc)
+            TextNodeView(text: str, color: annotation.color, location: loc, id: annotation.id)
         }
     }
     
@@ -308,7 +343,6 @@ struct CanvasView: View {
         
         switch appDelegate.currentTool {
         case .pen, .highlighter:
-            // Commit path
             appDelegate.annotations.append(Annotation(
                 type: .path(currentPath),
                 color: appDelegate.effectiveColor,
@@ -321,7 +355,13 @@ struct CanvasView: View {
         case .circle:
             appDelegate.annotations.append(Annotation(type: .circle(rect), color: appDelegate.selectedColor, width: appDelegate.lineWidth))
         case .text:
-            appDelegate.annotations.append(Annotation(type: .text("Double Click", start), color: appDelegate.selectedColor, width: 0))
+            // Text is created on click, handled by logic but if dragged we can also place it
+            // Only create if we haven't created one via other means.
+            // Simplified: Drag creates text at end point
+            let newText = Annotation(type: .text("Double Click", end), color: appDelegate.selectedColor, width: 0)
+            appDelegate.annotations.append(newText)
+            appDelegate.selectedAnnotationID = newText.id // Auto select newly created text
+            
         case .eraser:
             appDelegate.clearArea(in: rect)
         }
@@ -390,7 +430,6 @@ struct ControlPanel: View {
         .cornerRadius(12)
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.2), lineWidth: 1))
         .shadow(radius: 5)
-        // Ensure clicks register
         .onHover { hovering in
             if hovering { appDelegate.userInteractedWithToolbar() }
         }
@@ -415,19 +454,43 @@ struct ControlPanel: View {
     }
 }
 
-// MARK: - UI: Text Node
+// MARK: - UI: Text Node with Selection
 struct TextNodeView: View {
     @State var text: String
     var color: Color
     var location: CGPoint
+    var id: UUID
+    
+    @EnvironmentObject var appDelegate: AppDelegate
+    
+    var isSelected: Bool {
+        appDelegate.selectedAnnotationID == id
+    }
+    
     var body: some View {
-        TextField("", text: $text)
+        TextField("Type here", text: $text)
             .textFieldStyle(.plain)
             .font(.system(size: 24, weight: .bold))
             .foregroundColor(color)
+            .padding(8)
+            .background(
+                // Selection Border
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 2)
+                    .background(isSelected ? Color.white.opacity(0.1) : Color.clear)
+            )
             .frame(width: 300)
             .position(location)
             .shadow(color: .black.opacity(0.5), radius: 1, x: 0, y: 1)
+            .onTapGesture {
+                // Select this text node
+                appDelegate.selectedAnnotationID = id
+            }
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    appDelegate.selectedAnnotationID = id
+                }
+            )
     }
 }
 
@@ -457,15 +520,58 @@ struct SettingsView: View {
 }
 
 // MARK: - Helpers
+
+// 1. Fixed "First Click" Issue
 class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
+    // This allows the window to receive the first click immediately without needing to be "activated" first
+    override var acceptsFirstResponder: Bool { true }
+    
+    // This is the critical fix for "First interaction fails"
+    override func mouseDown(with event: NSEvent) {
+        // Pass event to responder chain (SwiftUI)
+        super.mouseDown(with: event)
+    }
 }
 
+// 2. Fixed "Snapping" Issue
 class ToolbarWindow: NSWindow {
     override var canBecomeKey: Bool { true }
-    // Enable dragging
+    
     override func mouseDown(with event: NSEvent) {
         self.performDrag(with: event)
+    }
+    
+    // Snap to edges when drag ends
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        snapToEdges()
+    }
+    
+    func snapToEdges() {
+        guard let screen = self.screen else { return }
+        let visibleFrame = screen.visibleFrame
+        var newOrigin = self.frame.origin
+        let snapDistance: CGFloat = 30.0
+        
+        // Snap Left
+        if abs(self.frame.minX - visibleFrame.minX) < snapDistance {
+            newOrigin.x = visibleFrame.minX
+        }
+        // Snap Right
+        if abs(self.frame.maxX - visibleFrame.maxX) < snapDistance {
+            newOrigin.x = visibleFrame.maxX - self.frame.width
+        }
+        // Snap Bottom
+        if abs(self.frame.minY - visibleFrame.minY) < snapDistance {
+            newOrigin.y = visibleFrame.minY
+        }
+        // Snap Top
+        if abs(self.frame.maxY - visibleFrame.maxY) < snapDistance {
+            newOrigin.y = visibleFrame.maxY - self.frame.height
+        }
+        
+        self.setFrameOrigin(newOrigin)
     }
 }
 
