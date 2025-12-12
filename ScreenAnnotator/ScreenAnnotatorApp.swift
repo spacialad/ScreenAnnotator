@@ -356,7 +356,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func setupToolbarWindow() {
         toolbarWindow = ToolbarWindow(
             contentRect: NSRect(x: 100, y: NSScreen.main?.visibleFrame.maxY ?? 800 - 150, width: 520, height: 80), // Widened for settings button
-            styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel], // Removed .titled to remove title bar
             backing: .buffered,
             defer: false
         )
