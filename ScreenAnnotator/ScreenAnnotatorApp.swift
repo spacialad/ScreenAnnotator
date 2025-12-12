@@ -680,7 +680,14 @@ struct ControlPanel: View {
     @EnvironmentObject var appDelegate: AppDelegate
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "line.3.horizontal").foregroundColor(.secondary)
+            // Drag Handle
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.secondary)
+                .frame(height: 24)
+                .contentShape(Rectangle())
+                .overlay(DragHandleView()) // Make the icon interactive for dragging
+            
             HStack(spacing: 4) {
                 // New Cursor / Interaction Tool
                 ToolButton(icon: "cursorarrow", tool: .cursor)
@@ -718,7 +725,14 @@ struct ControlPanel: View {
                 Image(systemName: "xmark.circle.fill").font(.system(size: 16)).foregroundColor(.gray).frame(width: 24, height: 24)
             }.buttonStyle(.plain)
         }
-        .padding(12).background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
+        .padding(12)
+        // BACKGROUND DRAG HANDLE: This view intercepts clicks on the background
+        .background(
+            ZStack {
+                VisualEffectView(material: .hudWindow, blendingMode: .behindWindow)
+                DragHandleView() // Transparent view that captures drag events
+            }
+        )
         .cornerRadius(12).overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.2), lineWidth: 1))
         .onHover { if $0 { appDelegate.userInteractedWithToolbar() } }
         .onTapGesture { appDelegate.userInteractedWithToolbar() }
@@ -848,6 +862,23 @@ class TransparentHostingView<Content: View>: NSHostingView<Content> {
     }
 }
 
+// Helper View for Dragging
+struct DragHandleView: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragHandleNSView {
+        return DragHandleNSView()
+    }
+    func updateNSView(_ nsView: DragHandleNSView, context: Context) {}
+}
+
+class DragHandleNSView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        self.window?.performDrag(with: event)
+        if let toolbar = self.window as? ToolbarWindow {
+            toolbar.snapToEdges()
+        }
+    }
+}
+
 class OverlayWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var acceptsFirstResponder: Bool { true }
@@ -867,10 +898,9 @@ class OverlayWindow: NSWindow {
 
 class ToolbarWindow: NSWindow {
     override var canBecomeKey: Bool { true }
-    override func mouseDown(with event: NSEvent) {
-        self.performDrag(with: event)
-        snapToEdges()
-    }
+    
+    // Removed mouseDown here because drag is handled by DragHandleView
+    
     func snapToEdges() {
         if let screen = self.screen {
             let visible = screen.visibleFrame
