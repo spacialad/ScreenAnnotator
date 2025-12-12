@@ -40,6 +40,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var toolbarWindow: ToolbarWindow?
     var settingsWindow: NSWindow? // Manual reference for Settings Window
     
+    // Monitors must be retained to ensure they continue receiving events
+    private var globalEventMonitor: Any?
+    private var localEventMonitor: Any?
+    
     // --- PREFERENCES ---
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
     @AppStorage("autoHideDelay") var autoHideDelay: Double = 3.0
@@ -94,6 +98,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Apply Default Color on Launch
         self.selectedColor = defaultColor
         
+        // Check Accessibility Permissions (Required for Global Hotkey)
+        checkAccessibilityPermissions()
+        
         setupMenuBar()
         setupOverlayWindow()
         setupToolbarWindow()
@@ -104,11 +111,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupAutoFocusLogic()
     }
     
+    func checkAccessibilityPermissions() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        let accessEnabled = AXIsProcessTrustedWithOptions(options as CFDictionary)
+        if !accessEnabled {
+            print("WARNING: Accessibility permissions not enabled. Global hotkey will not work.")
+        }
+    }
+    
     // Manual Settings Window Management (Required for .accessory apps)
     func openSettings() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 400, height: 360), // Increased height for new option
+                contentRect: NSRect(x: 0, y: 0, width: 400, height: 360),
                 styleMask: [.titled, .closable, .miniaturizable],
                 backing: .buffered,
                 defer: false
@@ -225,23 +240,29 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func setupGlobalHotKey() {
-        NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        // Clear existing
+        if let monitor = globalEventMonitor { NSEvent.removeMonitor(monitor) }
+        if let monitor = localEventMonitor { NSEvent.removeMonitor(monitor) }
+        
+        // 1. GLOBAL MONITOR (When app is backgrounded)
+        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return }
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
                 DispatchQueue.main.async { self.isDrawingMode.toggle() }
             }
         }
         
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        // 2. LOCAL MONITOR (When app is active)
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             
-            // 1. Toggle Shortcut
+            // Toggle Shortcut
             if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
                 self.isDrawingMode.toggle()
                 return nil
             }
             
-            // 2. Escape Key Handling
+            // Escape Key Handling
             if event.keyCode == KeyCode.escape {
                 if NSColorPanel.shared.isVisible {
                     NSColorPanel.shared.close()
@@ -274,7 +295,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // Check if user is typing in a text field
             let isEditing = (NSApp.keyWindow?.firstResponder as? NSTextView) != nil
             
-            // 3. Handle Tool Shortcuts (Only if NOT editing text)
+            // Tool Shortcuts (Only if NOT editing text)
             if self.isDrawingMode && !isEditing, let chars = event.charactersIgnoringModifiers?.lowercased() {
                 if chars == self.shortcutCursor.lowercased() { self.currentTool = .cursor; return nil }
                 if chars == self.shortcutPen.lowercased() { self.currentTool = .pen; return nil }
@@ -285,7 +306,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 if chars == self.shortcutEraser.lowercased() { self.currentTool = .eraser; return nil }
             }
             
-            // 4. Handle Text Box Logic
+            // Handle Text Box Logic
             if self.selectedAnnotationID != nil {
                 
                 if event.keyCode == KeyCode.delete || event.keyCode == KeyCode.forwardDelete {
