@@ -33,6 +33,49 @@ struct ScreenAnnotatorApp: App {
 let kGlobalToggleKey: Int = KeyCode.a // Updated to use local constant
 let kGlobalToggleModifiers: NSEvent.ModifierFlags = [.command, .option]
 
+// MARK: - C-Function Callback for Event Tap
+// This must be a standalone function to be passed as a C-function pointer
+func eventTapCallback(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent, refcon: UnsafeMutableRawPointer?) -> Unmanaged<CGEvent>? {
+    // 1. Handle Timeout (Re-enable tap if disabled by system)
+    if type == .tapDisabledByTimeout {
+        if let refcon = refcon {
+            let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+            if let tap = appDelegate.eventTap {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            }
+        }
+        return Unmanaged.passUnretained(event)
+    }
+    
+    // 2. Handle Key Down
+    if type == .keyDown {
+        let flags = event.flags
+        let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+        
+        // Check for Cmd + Option + A
+        // We check strict flags to avoid triggering on Cmd+Opt+Shift+A etc.
+        let isCmd = flags.contains(.maskCommand)
+        let isOpt = flags.contains(.maskAlternate)
+        let isCtrl = flags.contains(.maskControl)
+        let isShift = flags.contains(.maskShift)
+        
+        if keyCode == KeyCode.a && isCmd && isOpt && !isCtrl && !isShift {
+            // Match found!
+            if let refcon = refcon {
+                let appDelegate = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    appDelegate.isDrawingMode.toggle()
+                }
+            }
+            // RETURN NIL TO CONSUME THE EVENT (Prevents leak to other apps)
+            return nil
+        }
+    }
+    
+    // Pass event through to system
+    return Unmanaged.passUnretained(event)
+}
+
 // MARK: - App Delegate & State Management
 class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var statusItem: NSStatusItem?
@@ -40,9 +83,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var toolbarWindow: ToolbarWindow?
     var settingsWindow: NSWindow? // Manual reference for Settings Window
     
-    // Monitors must be retained to ensure they continue receiving events
-    private var globalEventMonitor: Any?
-    private var localEventMonitor: Any?
+    // Monitors
+    private var globalEventMonitor: Any? // Fallback passive monitor
+    private var localEventMonitor: Any?  // Active app monitor
+    var eventTap: CFMachPort?            // Active global interceptor
+    private var runLoopSource: CFRunLoopSource?
     
     // --- PREFERENCES ---
     @AppStorage("autoHideEnabled") var autoHideEnabled: Bool = true
@@ -105,7 +150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         setupOverlayWindow()
         setupToolbarWindow()
         setupColorPanel()
-        setupGlobalHotKey()
+        setupGlobalHotKey() // Now attempts Active Tap first
         setupColorPanelAutoClose()
         setupColorSelectionObserver()
         setupAutoFocusLogic()
@@ -240,26 +285,42 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
     
     func setupGlobalHotKey() {
-        // Clear existing
-        if let monitor = globalEventMonitor { NSEvent.removeMonitor(monitor) }
-        if let monitor = localEventMonitor { NSEvent.removeMonitor(monitor) }
+        // Clear existing monitors
+        if let monitor = globalEventMonitor { NSEvent.removeMonitor(monitor); globalEventMonitor = nil }
+        if let monitor = localEventMonitor { NSEvent.removeMonitor(monitor); localEventMonitor = nil }
+        if let runLoopSource = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            self.runLoopSource = nil
+            self.eventTap = nil
+        }
         
-        // 1. GLOBAL MONITOR (When app is backgrounded)
-        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self else { return }
-            if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
-                DispatchQueue.main.async { self.isDrawingMode.toggle() }
+        // 1. Attempt ACTIVE TAP (Event Tap) to swallow key events
+        let tapCreated = setupActiveEventTap()
+        
+        if !tapCreated {
+            print("⚠️ Event Tap creation failed. Falling back to passive NSEvent monitor. (Shortcuts may leak)")
+            // Fallback: Passive Global Monitor
+            globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self = self else { return }
+                if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
+                    DispatchQueue.main.async { self.isDrawingMode.toggle() }
+                }
             }
         }
         
-        // 2. LOCAL MONITOR (When app is active)
+        // 2. LOCAL MONITOR (For Esc, Shortcuts, etc when App is Active)
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self else { return event }
             
-            // Toggle Shortcut
-            if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
-                self.isDrawingMode.toggle()
-                return nil
+            // NOTE: We do NOT handle the Toggle Shortcut (Cmd+Opt+A) here if the tap is active,
+            // because the tap sees it globally (even when active) and handles it.
+            // If we handled it here too, it would toggle twice.
+            // However, if tap failed, we might need it.
+            if !tapCreated {
+                if event.keyCode == kGlobalToggleKey && event.modifierFlags.contains(kGlobalToggleModifiers) {
+                    self.isDrawingMode.toggle()
+                    return nil
+                }
             }
             
             // Escape Key Handling
@@ -334,6 +395,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             
             return event
         }
+    }
+    
+    // SETUP CORE GRAPHICS EVENT TAP
+    func setupActiveEventTap() -> Bool {
+        let eventMask = (1 << CGEventType.keyDown.rawValue)
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        
+        guard let eventTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap, // Insert at head to intercept before app
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(eventMask),
+            callback: eventTapCallback,
+            userInfo: refcon
+        ) else {
+            return false
+        }
+        
+        self.eventTap = eventTap
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+        self.runLoopSource = runLoopSource
+        return true
     }
     
     func deleteSelectedAnnotation() {
