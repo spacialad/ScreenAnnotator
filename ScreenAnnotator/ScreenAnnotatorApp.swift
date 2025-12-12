@@ -173,10 +173,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             let toolbarFrame = self.toolbarWindow?.frame ?? .zero
             let colorPanelFrame = NSColorPanel.shared.isVisible ? NSColorPanel.shared.frame : .zero
             
+            // Use a small buffer (-5) to detect hover slightly before entering/after leaving
             let overToolbar = toolbarFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
             let overColorPanel = NSColorPanel.shared.isVisible && colorPanelFrame.insetBy(dx: -5, dy: -5).contains(mouseLocation)
             
-            if !overToolbar && !overColorPanel {
+            if overToolbar {
+                // 1. Mouse over Toolbar -> Make Toolbar Active
+                if self.toolbarWindow?.isKeyWindow == false {
+                    self.toolbarWindow?.makeKey()
+                }
+            } else if overColorPanel {
+                // 2. Mouse over Color Panel -> Make Panel Active
+                if NSColorPanel.shared.isKeyWindow == false {
+                    NSColorPanel.shared.makeKey()
+                }
+            } else {
+                // 3. Mouse over Canvas -> Make Overlay Active
                 if self.overlayWindow?.isKeyWindow == false {
                     self.overlayWindow?.makeKey()
                 }
